@@ -188,6 +188,9 @@ class TWISTER(models.Model):
 
             if key=="precision":
                 self.config[key] = {"float16": torch.float16, "float32": torch.float32}[value]
+            elif key in ["train_env_params", "eval_env_params"]:
+                # Merge the environment parameters
+                self.config[key].update(value)
             else:
                 self.config[key] = value
 

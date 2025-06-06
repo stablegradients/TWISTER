@@ -634,6 +634,9 @@ class Model(modules.Module):
         detect_anomaly=False, 
         recompute_metrics=False,
         wandb_logging=False,
+        wandb_project='nnet',
+        wandb_entity=None,
+        seed=None,
         verbose_progress_bar=1,
         keep_last_k=None
     ):
@@ -641,7 +644,28 @@ class Model(modules.Module):
         # Init wandb
         if callback_path is not None and wandb_logging:
             try:
-                wandb.init(project='nnet', sync_tensorboard=True, name=callback_path)
+                # Generate run name and group based on callback path and seed
+                if seed is not None:
+                    # Extract base name from callback path (without seed)
+                    if f"seed_{seed}" in callback_path:
+                        base_name = callback_path.replace(f"/seed_{seed}", "").replace(f"\\seed_{seed}", "")
+                    else:
+                        base_name = callback_path
+                    
+                    # Group name is the base name, run name includes seed
+                    group_name = base_name.replace("callbacks/", "").replace("callbacks\\", "")
+                    run_name = f"seed_{seed}_{group_name}"
+                else:
+                    group_name = None
+                    run_name = callback_path.replace("callbacks/", "").replace("callbacks\\", "")
+                
+                wandb.init(
+                    project=wandb_project,
+                    entity=wandb_entity, 
+                    group=group_name,
+                    name=run_name,
+                    sync_tensorboard=True
+                )
             except Exception as e:
                 print(str(e))
 

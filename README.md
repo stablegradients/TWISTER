@@ -73,7 +73,12 @@ env_name=atari100k-alien run_name=atari100k python3 main.py --load_last --mode e
 --cpu                        action="store_true"                        help="Load model on cpu"
 --load_last                  action="store_true"                        help="Load last model checkpoint"
 --wandb                      action="store_true",                       help="Initialize wandb logging"
+--wandb_project              type=str   default="nnet"                  help="Wandb project name"
+--wandb_entity               type=str   default=None                    help="Wandb entity/username"
 --verbose_progress_bar       type=int,  default=1,                      help="Verbose level of progress bar display"
+--seed                       type=int   default=None                    help="Random seed for reproducibility"
+--save_checkpoints           action="store_true"                        help="Enable checkpoint saving"
+--log_media                  action="store_true"                        help="Enable media (images/videos) logging"
 
 # Training
 --saving_period_epoch        type=int   default=1                       help="Model saving every 'n' epochs"
@@ -93,6 +98,51 @@ env_name=atari100k-alien run_name=atari100k python3 main.py --load_last --mode e
 # Debug
 --detect_anomaly             action="store_true"                        help="Enable or disable the autograd anomaly detection"
 ```
+
+## New Features
+
+### 1. Reproducible Experiments with Manual Seed Setting
+Set a specific random seed for reproducible experiments:
+```bash
+env_name=atari100k-alien run_name=reproducible python3 main.py --seed 42
+```
+
+### 2. Custom Wandb Configuration
+Specify your own wandb project and username:
+```bash
+env_name=atari100k-alien run_name=my_exp python3 main.py --wandb --wandb_project "my_project" --wandb_entity "my_username"
+```
+
+### 3. Selective Checkpoint and Media Logging
+Control what gets saved during training:
+```bash
+# Enable checkpoint saving (disabled by default)
+env_name=atari100k-alien run_name=my_exp python3 main.py --save_checkpoints
+
+# Enable media (images/videos) logging (disabled by default)  
+env_name=atari100k-alien run_name=my_exp python3 main.py --log_media
+```
+
+### 4. Automatic Seed-based Organization
+When using seeds, runs are automatically organized:
+- **Wandb Groups**: Runs with different seeds but same experiment are grouped together
+- **Run Names**: Include seed information (e.g., `seed_42_my_exp_alien`)
+- **Callback Paths**: Separate directories for each seed (`callbacks/my_exp/alien/seed_42/`)
+
+### 5. Multiple Seeds Comparison
+Run the same experiment with different seeds:
+```bash
+# Run with seed 42
+env_name=atari100k-alien run_name=seed_study python3 main.py --wandb --seed 42 --save_checkpoints
+
+# Run with seed 123  
+env_name=atari100k-alien run_name=seed_study python3 main.py --wandb --seed 123 --save_checkpoints
+
+# Run with seed 456
+env_name=atari100k-alien run_name=seed_study python3 main.py --wandb --seed 456 --save_checkpoints
+```
+
+All three runs will be grouped together in wandb under the same group name, making comparison easy.
 
 ## Citation
 

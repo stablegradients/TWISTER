@@ -12,6 +12,21 @@ if isinstance(override_config, str):
     override_config = json.loads(override_config)
 print("override_config:", override_config)
 
+# Check if media logging is disabled
+log_media = os.environ.get("log_media", "false").lower() == "true"
+if not log_media:
+    # Disable video saving by ensuring episode_saving_path is None for both training and evaluation
+    if "train_env_params" not in override_config:
+        override_config["train_env_params"] = {}
+    if "eval_env_params" not in override_config:
+        override_config["eval_env_params"] = {}
+    
+    # Explicitly set episode_saving_path to None to disable video saving
+    if "episode_saving_path" not in override_config["train_env_params"]:
+        override_config["train_env_params"]["episode_saving_path"] = None
+    if "episode_saving_path" not in override_config["eval_env_params"]:
+        override_config["eval_env_params"]["episode_saving_path"] = None
+
 # Model
 model = nnet.models.TWISTER(env_name=env_name, override_config=override_config)
 model.compile()
