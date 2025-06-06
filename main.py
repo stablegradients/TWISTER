@@ -27,18 +27,38 @@ import os
 import argparse
 import importlib
 import warnings
+import random
+import numpy as np
 
 # Disable Warnings
 warnings.filterwarnings("ignore")
+
+def set_seed(seed):
+    """Set random seed for reproducibility"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def main(args):
 
     ###############################################################################
     # Init
     ###############################################################################
+    
+    # Set seed if provided
+    if args.seed is not None:
+        set_seed(args.seed)
+        print(f"Set random seed to: {args.seed}")
 
     # Print Mode
     print("Mode: {}".format(args.mode))
+
+    # Set environment variable for media logging
+    os.environ["log_media"] = str(args.log_media).lower()
 
     # Load Config
     args.config = importlib.import_module(args.config_file.replace(".py", "").replace("/", "."))
@@ -66,14 +86,17 @@ def main(args):
             accumulated_steps=getattr(args.config, "accumulated_steps", 1),
             eval_period_step=getattr(args.config, "eval_period_step", args.eval_period_step),
             eval_period_epoch=getattr(args.config, "eval_period_epoch", args.eval_period_epoch),
-            saving_period_epoch=getattr(args.config, "saving_period_epoch", args.saving_period_epoch),
-            log_figure_period_step=getattr(args.config, "log_figure_period_step", args.log_figure_period_step),
-            log_figure_period_epoch=getattr(args.config, "log_figure_period_epoch", args.log_figure_period_epoch),
+            saving_period_epoch=getattr(args.config, "saving_period_epoch", args.saving_period_epoch) if args.save_checkpoints else None,
+            log_figure_period_step=getattr(args.config, "log_figure_period_step", args.log_figure_period_step) if args.log_media else None,
+            log_figure_period_epoch=getattr(args.config, "log_figure_period_epoch", args.log_figure_period_epoch) if args.log_media else None,
             step_log_period=args.step_log_period,
             grad_init_scale=getattr(args.config, "grad_init_scale", 65536.0),
             detect_anomaly=getattr(args.config, "detect_anomaly", args.detect_anomaly),
             recompute_metrics=getattr(args.config, "recompute_metrics", False),
             wandb_logging=args.wandb,
+            wandb_project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
+            seed=args.seed,
             verbose_progress_bar=args.verbose_progress_bar,
             keep_last_k=args.keep_last_k
         )
@@ -102,7 +125,12 @@ if __name__ == "__main__":
     parser.add_argument("--cpu",                        action="store_true",                                                            help="Load model on cpu")
     parser.add_argument("--load_last",                  action="store_true",                                                            help="Load last model checkpoint")
     parser.add_argument("--wandb",                      action="store_true",                                                            help="Initialize wandb logging")
+    parser.add_argument("--wandb_project",              type=str,   default="nnet",                                                     help="Wandb project name")
+    parser.add_argument("--wandb_entity",               type=str,   default=None,                                                       help="Wandb entity/username")
     parser.add_argument("--verbose_progress_bar",       type=int,   default=1,                                                          help="Verbose level of progress bar display")
+    parser.add_argument("--seed",                       type=int,   default=None,                                                       help="Random seed for reproducibility")
+    parser.add_argument("--save_checkpoints",           action="store_true",                                                            help="Enable checkpoint saving")
+    parser.add_argument("--log_media",                  action="store_true",                                                            help="Enable media (images/videos) logging")
 
     # Training
     parser.add_argument("--saving_period_epoch",        type=int,   default=1,                                                          help="Model saving every 'n' epochs")

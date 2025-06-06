@@ -56,6 +56,11 @@ def load_model(args):
 
     # Set Callback Path
     args.config.callback_path = getattr(args.config, "callback_path", os.path.join("callbacks", "/".join(args.config_file.replace(".py", "").split("/")[1:])))
+    
+    # Append seed to callback path if provided
+    if hasattr(args, 'seed') and args.seed is not None:
+        args.config.callback_path = os.path.join(args.config.callback_path, f"seed_{args.seed}")
+    
     # Append callback Tag
     if hasattr(args.config, "callback_tag"):
         args.config.callback_path = os.path.join(args.config.callback_path, args.config.callback_tag)
