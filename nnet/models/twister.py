@@ -182,9 +182,16 @@ class TWISTER(models.Model):
         self.config.log_figure_batch = 16
         self.config.log_figure_context_frames = 5
 
+        # SAM Optimizer Config (default values)
+        self.config.use_sam = False
+        self.config.rho = 0.05
+        self.config.use_adaptive = False
+
         # Override Config
         for key, value in override_config.items():
-            assert key in self.config, "{} not in config".format(key)
+            # Allow SAM-related keys that might not be in the original config
+            if key not in self.config and key not in ["use_sam", "rho", "use_adaptive"]:
+                raise AssertionError("{} not in config".format(key))
 
             if key=="precision":
                 self.config[key] = {"float16": torch.float16, "float32": torch.float32}[value]
@@ -460,10 +467,31 @@ class TWISTER(models.Model):
         
         # Compile World Model
         model_params = itertools.chain(self.encoder_network.parameters(), self.rssm.parameters(), self.reward_network.parameters(), self.decoder_network.parameters(), self.continue_network.parameters(), self.contrastive_network.parameters())
-        self.world_model.compile(
-            optimizer=optimizers.Adam(params=[
+        
+        # Choose optimizer based on configuration
+        if self.config.use_sam:
+            # Import SAM optimizer
+            from nnet.optimizers.sam import SAM
+            
+            print("🔥 USING SAM OPTIMIZER FOR WORLD MODEL 🔥")
+            print(f"SAM Parameters: rho={self.config.rho}, adaptive={self.config.use_adaptive}")
+            
+            # Create SAM optimizer with Adam as base optimizer
+            world_model_optimizer = SAM(
+                params=[{"params": model_params, "lr": self.config.model_lr, "grad_max_norm": self.config.model_grad_max_norm, "eps": self.config.model_eps}],
+                base_optimizer=optimizers.Adam,
+                rho=self.config.rho,
+                adaptive=self.config.use_adaptive,
+                weight_decay=self.config.opt_weight_decay
+            )
+        else:
+            # Use regular Adam optimizer
+            world_model_optimizer = optimizers.Adam(params=[
                 {"params": model_params, "lr": self.config.model_lr, "grad_max_norm": self.config.model_grad_max_norm, "eps": self.config.model_eps}, 
-            ], weight_decay=self.config.opt_weight_decay), 
+            ], weight_decay=self.config.opt_weight_decay)
+        
+        self.world_model.compile(
+            optimizer=world_model_optimizer,
             losses={},
             loss_weights={},
             metrics=None,
@@ -802,6 +830,73 @@ class TWISTER(models.Model):
 
         def __getattr__(self, name):
             return getattr(self.outer, name)
+
+        def train_step(self, inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training):
+            """Custom train_step for world model that handles SAM optimizer"""
+            
+            # Check if using SAM optimizer
+            from nnet.optimizers.sam import SAM
+            is_sam = isinstance(self.optimizer, SAM)
+            
+            if is_sam:
+                # Accumulated Steps
+                acc_step += 1
+                
+                # SAM requires a closure function for the second forward-backward pass
+                def closure():
+                    self.optimizer.zero_grad()
+                    if "cuda" in str(self.device):
+                        with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
+                            batch_losses_closure, _, _, _ = self.forward_model(inputs, targets, compute_metrics=eval_training)
+                    else:
+                        batch_losses_closure, _, _, _ = self.forward_model(inputs, targets, compute_metrics=eval_training)
+                    
+                    loss_closure = batch_losses_closure["loss"] / accumulated_steps
+                    grad_scaler.scale(loss_closure).backward()
+                    return loss_closure
+                
+                # First forward-backward pass (for gradient calculation)
+                if "cuda" in str(self.device):
+                    with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
+                        batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+                else:
+                    batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+                
+                loss = batch_losses["loss"] / accumulated_steps
+                grad_scaler.scale(loss).backward()
+                
+                # Continue accumulating
+                if acc_step < accumulated_steps:
+                    return batch_losses, batch_metrics, acc_step
+                
+                # Unscale gradients before SAM step
+                grad_scaler.unscale_(self.optimizer)
+                
+                # SAM step with closure for second forward-backward pass
+                grad_scaler.step(self.optimizer, closure)
+                grad_scaler.update()
+                
+                acc_step = 0
+                
+            else:
+                # Use default train_step for non-SAM optimizers
+                return super().train_step(inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training)
+            
+            # Update Model Infos (similar to base implementation)
+            if len(self.optimizer.param_groups) > 1:
+                for i, param_group in enumerate(self.optimizer.param_groups):
+                    self.add_info("lr_{}".format(i), float(param_group['lr']))
+                    if "grad_norm" in param_group:
+                        self.add_info("grad_norm_{}".format(i), round(float(param_group['grad_norm']), 4))
+            else:
+                self.add_info("lr", float(self.optimizer.param_groups[0]['lr']))
+                if "grad_norm" in self.optimizer.param_groups[0]:
+                    self.add_info("grad_norm", round(float(self.optimizer.param_groups[0]['grad_norm']), 4))
+            
+            # Add Info Model Step
+            self.add_info("step", self.model_step.item())
+            
+            return batch_losses, batch_metrics, acc_step
 
         def forward(self, inputs):
 

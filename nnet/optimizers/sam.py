@@ -3,8 +3,8 @@ import torch
 
 class SAM(torch.optim.Optimizer):
     def __init__(self, params, base_optimizer, rho=0.05, adaptive=False, **kwargs):
-        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
-
+        assert rho > 0.0, f"Invalid rho, should be positive: {rho}"
+        print(f"SAM init: rho={rho}, adaptive={adaptive}")
         defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
         super(SAM, self).__init__(params, defaults)
 
@@ -23,7 +23,12 @@ class SAM(torch.optim.Optimizer):
                 self.state[p]["old_p"] = p.data.clone()
                 e_w = (torch.pow(p, 2) if group["adaptive"] else 1.0) * p.grad * scale.to(p)
                 p.add_(e_w)  # climb to the local maximum "w + e(w)"
-
+        if grad_norm == 0:
+            print("SAM first_step: Skipping perturbation (grad_norm = 0)")
+            print("This is probably a bug in the model or the data, or a very small learning rate. ⚠️")
+            self.zero_grad()
+            return
+        
         if zero_grad: self.zero_grad()
 
     @torch.no_grad()

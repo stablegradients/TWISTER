@@ -644,20 +644,26 @@ class Model(modules.Module):
         # Init wandb
         if callback_path is not None and wandb_logging:
             try:
-                # Generate run name and group based on callback path and seed
+                # Check if SAM is being used and create comprehensive suffix
+                sam_suffix = ""
+                if hasattr(self, 'config') and hasattr(self.config, 'use_sam') and self.config.use_sam:
+                    adaptive_str = "_adaptive" if self.config.use_adaptive else ""
+                    sam_suffix = f"_SAM_rho_{self.config.rho}{adaptive_str}"
+                
+                # Extract base name from callback path (removing seed if present)
+                if seed is not None and f"seed_{seed}" in callback_path:
+                    base_name = callback_path.replace(f"/seed_{seed}", "").replace(f"\\seed_{seed}", "")
+                else:
+                    base_name = callback_path
+                
+                # Clean base name and add SAM suffix for group
+                group_name = base_name.replace("callbacks/", "").replace("callbacks\\", "") + sam_suffix
+                
+                # Generate run name based on whether seed is provided
                 if seed is not None:
-                    # Extract base name from callback path (without seed)
-                    if f"seed_{seed}" in callback_path:
-                        base_name = callback_path.replace(f"/seed_{seed}", "").replace(f"\\seed_{seed}", "")
-                    else:
-                        base_name = callback_path
-                    
-                    # Group name is the base name, run name includes seed
-                    group_name = base_name.replace("callbacks/", "").replace("callbacks\\", "")
                     run_name = f"seed_{seed}_{group_name}"
                 else:
-                    group_name = None
-                    run_name = callback_path.replace("callbacks/", "").replace("callbacks\\", "")
+                    run_name = group_name
                 
                 wandb.init(
                     project=wandb_project,
