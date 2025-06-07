@@ -1,15 +1,42 @@
 import nnet
 import os
 import json
+import sys
 
 # Extract params from filename
 env_name = os.environ["env_name"]
 print("TWISTER selected env_name: {}".format(env_name))
 
+# Extract SAM parameters from command line arguments
+sam_config = {}
+if "--use_sam" in sys.argv:
+    sam_config["use_sam"] = True
+    
+    # Extract rho value
+    if "--rho" in sys.argv:
+        rho_idx = sys.argv.index("--rho") + 1
+        if rho_idx < len(sys.argv):
+            sam_config["rho"] = float(sys.argv[rho_idx])
+    else:
+        sam_config["rho"] = 0.05  # default value
+    
+    # Extract adaptive setting
+    sam_config["use_adaptive"] = "--use_adaptive" in sys.argv
+    
+    print("🔥 SAM OPTIMIZER ENABLED FOR WORLD MODEL 🔥")
+    print(f"SAM Configuration:")
+    print(f"  - rho: {sam_config['rho']}")
+    print(f"  - adaptive: {sam_config['use_adaptive']}")
+    print("=" * 50)
+
 # Override Config
 override_config = os.environ.get("override_config", {})
 if isinstance(override_config, str):
     override_config = json.loads(override_config)
+
+# Add SAM configuration to override_config
+override_config.update(sam_config)
+
 print("override_config:", override_config)
 
 # Check if media logging is disabled

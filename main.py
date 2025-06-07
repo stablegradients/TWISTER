@@ -150,6 +150,11 @@ if __name__ == "__main__":
     # Debug
     parser.add_argument("--detect_anomaly",             action="store_true",                                                            help="Enable or disable the autograd anomaly detection")
     
+    # SAM Optimizer
+    parser.add_argument("--use_sam",                     action="store_true",                                                            help="Replace world model optimizer with sam based optimizer")
+    parser.add_argument("--rho",                        type=float, default=0.05,                                                       help="Rho value to be used in the optimizer")
+    parser.add_argument("--use_adaptive",               action="store_true",                                                            help="Whether to use adaptive=true in sam or not")
+    
     # Parse Args
     args = parser.parse_args()
 
