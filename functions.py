@@ -53,6 +53,14 @@ def load_model(args):
 
     # Set Model Device
     model = args.config.model.to(device)
+    
+    # Set SAM arguments if available
+    if hasattr(args, 'use_sam'):
+        model.use_sam = args.use_sam
+    if hasattr(args, 'adaptive_sam'):
+        model.adaptive_sam = args.adaptive_sam
+    if hasattr(args, 'sam_rho'):
+        model.sam_rho = args.sam_rho
 
     # Set Callback Path
     args.config.callback_path = getattr(args.config, "callback_path", os.path.join("callbacks", "/".join(args.config_file.replace(".py", "").split("/")[1:])))

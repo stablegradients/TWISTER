@@ -150,6 +150,11 @@ if __name__ == "__main__":
     # Debug
     parser.add_argument("--detect_anomaly",             action="store_true",                                                            help="Enable or disable the autograd anomaly detection")
     
+    # SAM Optimizer
+    parser.add_argument("--use_sam",                    action="store_true",                                                            help="Use SAM (Sharpness-Aware Minimization) optimizer")
+    parser.add_argument("--adaptive_sam",               action="store_true",                                                            help="Use adaptive SAM variant")
+    parser.add_argument("--sam_rho",                    type=float,  default=0.05,                                                   help="SAM perturbation radius (default: 0.05)")
+    
     # Parse Args
     args = parser.parse_args()
 

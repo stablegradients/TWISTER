@@ -42,10 +42,26 @@ class Model(modules.Module):
 
     def compile(self, losses, loss_weights=None, optimizer="Adam", metrics=None, decoders=None):
 
+        # Check for SAM usage
+        use_sam = getattr(self, 'use_sam', False)
+        adaptive_sam = getattr(self, 'adaptive_sam', False)
+        sam_rho = getattr(self, 'sam_rho', 0.05)
+        
         # Optimizer
         if isinstance(optimizer, str):
-            self.optimizer = optim_dict[optimizer](params=self.parameters())
+            if use_sam:
+                # Create base optimizer class (not instance)
+                base_optimizer_class = optim_dict[optimizer]
+                # Create SAM optimizer wrapping the base optimizer
+                self.optimizer = optim_dict["SAM"](params=self.parameters(), base_optimizer=base_optimizer_class, rho=sam_rho, adaptive=adaptive_sam)
+                print(f"Using SAM optimizer (rho={sam_rho}, adaptive={adaptive_sam}) wrapping {optimizer}")
+            else:
+                self.optimizer = optim_dict[optimizer](params=self.parameters())
         else:
+            if use_sam:
+                # If optimizer is already an instance, we need to wrap it differently
+                # This case might need special handling depending on your use case
+                raise ValueError("SAM wrapping of pre-instantiated optimizers is not supported. Please use string optimizer names when using SAM.")
             self.optimizer = optimizer
 
         # Model Step
@@ -304,38 +320,97 @@ class Model(modules.Module):
         
         """
 
-        # Automatic Mixed Precision Casting (model forward + loss computing)
-        if "cuda" in str(self.device):
-            with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
+        # Check if using SAM
+        use_sam = getattr(self, 'use_sam', False) and hasattr(self.optimizer, 'first_step')
+
+        if use_sam:
+            # SAM Two-step process
+            
+            # First step: forward pass
+            if "cuda" in str(self.device):
+                with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
+                    batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+            else:
                 batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+
+            # Accumulated Steps
+            loss = batch_losses["loss"] / accumulated_steps
+            acc_step += 1
+
+            # First backward: Accumulate gradients
+            grad_scaler.scale(loss).backward()
+
+            # Continue Accumulating
+            if acc_step < accumulated_steps:
+                return batch_losses, batch_metrics, acc_step
+
+            # Grad Scaler Info
+            if grad_scaler.is_enabled():
+                self.add_info("grad_scale", grad_scaler.get_scale())
+
+            # Unscale Gradients for first step
+            grad_scaler.unscale_(self.optimizer)
+
+            # SAM first step
+            self.optimizer.first_step(zero_grad=True)
+
+            # Second step: forward pass again  
+            if "cuda" in str(self.device):
+                with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
+                    batch_losses_2, batch_metrics_2, batch_truths_2, batch_preds_2 = self.forward_model(inputs, targets, compute_metrics=False)
+            else:
+                batch_losses_2, batch_metrics_2, batch_truths_2, batch_preds_2 = self.forward_model(inputs, targets, compute_metrics=False)
+
+            # Second backward
+            loss_2 = batch_losses_2["loss"] / accumulated_steps
+            grad_scaler.scale(loss_2).backward()
+
+            # Unscale gradients for second step
+            grad_scaler.unscale_(self.optimizer)
+
+            # SAM second step (actual parameter update)
+            self.optimizer.second_step(zero_grad=True)
+
+            # Update scale
+            grad_scaler.update()
+
+            acc_step = 0
+
         else:
-            batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+            # Standard optimization process
+            
+            # Automatic Mixed Precision Casting (model forward + loss computing)
+            if "cuda" in str(self.device):
+                with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
+                    batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+            else:
+                batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
 
-        # Accumulated Steps
-        loss = batch_losses["loss"] / accumulated_steps
-        acc_step += 1
+            # Accumulated Steps
+            loss = batch_losses["loss"] / accumulated_steps
+            acc_step += 1
 
-        # Backward: Accumulate gradients
-        grad_scaler.scale(loss).backward()
+            # Backward: Accumulate gradients
+            grad_scaler.scale(loss).backward()
 
-        # Continue Accumulating
-        if acc_step < accumulated_steps:
-            return batch_losses, batch_metrics, acc_step
+            # Continue Accumulating
+            if acc_step < accumulated_steps:
+                return batch_losses, batch_metrics, acc_step
 
-        # Grad Scaler Info
-        if grad_scaler.is_enabled():
-            self.add_info("grad_scale", grad_scaler.get_scale())
+            # Grad Scaler Info
+            if grad_scaler.is_enabled():
+                self.add_info("grad_scale", grad_scaler.get_scale())
 
-        # Unscale Gradients
-        grad_scaler.unscale_(self.optimizer)
+            # Unscale Gradients
+            grad_scaler.unscale_(self.optimizer)
 
-        # Optimizer Step and Update Scale
-        grad_scaler.step(self.optimizer)
-        grad_scaler.update()
+            # Optimizer Step and Update Scale
+            grad_scaler.step(self.optimizer)
+            grad_scaler.update()
 
-        # Zero Gradients
-        self.optimizer.zero_grad()
-        acc_step = 0
+            # Zero Gradients
+            self.optimizer.zero_grad()
+            acc_step = 0
 
         # Update Model Infos
         if len(self.optimizer.param_groups) > 1:
@@ -644,6 +719,11 @@ class Model(modules.Module):
         # Init wandb
         if callback_path is not None and wandb_logging:
             try:
+                # Check for SAM usage to modify run name
+                use_sam = getattr(self, 'use_sam', False) and hasattr(self.optimizer, 'first_step')
+                adaptive_sam = getattr(self, 'adaptive_sam', False)
+                sam_rho = getattr(self, 'sam_rho', 0.05)
+                
                 # Generate run name and group based on callback path and seed
                 if seed is not None:
                     # Extract base name from callback path (without seed)
@@ -658,6 +738,15 @@ class Model(modules.Module):
                 else:
                     group_name = None
                     run_name = callback_path.replace("callbacks/", "").replace("callbacks\\", "")
+                
+                # Add SAM information to run name
+                if use_sam:
+                    sam_suffix = f"_SAM_rho{sam_rho}"
+                    if adaptive_sam:
+                        sam_suffix += "_adaptive"
+                    run_name += sam_suffix
+                    if group_name is not None:
+                        group_name += sam_suffix
                 
                 wandb.init(
                     project=wandb_project,
