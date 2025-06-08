@@ -101,8 +101,7 @@ class TWISTER(models.Model):
         self.config.model_grad_max_norm = 1000
         self.config.critic_grad_max_norm = 100
         self.config.actor_grad_max_norm = 100
-        self.config.grad_init_scale = 32.0
-        self.config.precision = {"dmc": torch.float16, "atari100k": torch.float32}[self.env_type]
+
 
         # Replay Buffer
         self.config.buffer_capacity = int(1e6)
@@ -193,9 +192,7 @@ class TWISTER(models.Model):
             if key not in self.config and key not in ["use_sam", "rho", "use_adaptive"]:
                 raise AssertionError("{} not in config".format(key))
 
-            if key=="precision":
-                self.config[key] = {"float16": torch.float16, "float32": torch.float32}[value]
-            elif key in ["train_env_params", "eval_env_params"]:
+            if key in ["train_env_params", "eval_env_params"]:
                 # Merge the environment parameters
                 self.config[key].update(value)
             else:
@@ -351,12 +348,14 @@ class TWISTER(models.Model):
             "model_state_dict": self.state_dict(),
             "optimizer_state_dict": None if not save_optimizer else {key: value.state_dict() for key, value in self.optimizer.items()} if isinstance(self.optimizer, dict) else self.optimizer.state_dict(),
             "model_step": self.model_step,
-            "grad_scaler_state_dict": self.grad_scaler.state_dict() if hasattr(self, "grad_scaler") else None,
-            "replay_buffer_state_dict": self.replay_buffer.state_dict()
-        }, path)
-        
-        # Save Buffer
-        self.replay_buffer.save()
+            "world_model_step": self.world_model.model_step,
+            "actor_model_step": self.actor_model.model_step,
+            "critic_model_step": self.critic_model.model_step,
+            "action_step": self.action_step,
+            "episodes": self.episodes,
+            "ep_rewards": self.ep_rewards,
+            "replay_buffer": self.replay_buffer,
+            }, path)
 
         # Print Model state
         print("Model saved at step {}: {}".format(self.model_step, path))
@@ -379,7 +378,7 @@ class TWISTER(models.Model):
                 os.remove(older_checkpoint)
 
                 # Print
-                print("Removed old checkpoint {}".format(older_checkpoint))
+                print("Removed old checkpoint: {}".format(older_checkpoint))
 
     def load(self, path, load_optimizer=True, verbose=True, strict=True):
 
@@ -402,18 +401,26 @@ class TWISTER(models.Model):
             else:
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
-            # Model Step, already loaded from optm
-            self.model_step.fill_(checkpoint["model_step"])
+        # Load Model Steps
+        if "world_model_step" in checkpoint:
+            self.world_model.model_step.fill_(checkpoint["world_model_step"])
+        if "actor_model_step" in checkpoint:
+            self.actor_model.model_step.fill_(checkpoint["actor_model_step"])
+        if "critic_model_step" in checkpoint:
+            self.critic_model.model_step.fill_(checkpoint["critic_model_step"])
+        if "action_step" in checkpoint:
+            self.action_step.fill_(checkpoint["action_step"])
+        if "episodes" in checkpoint:
+            self.episodes.fill_(checkpoint["episodes"])
+        if "ep_rewards" in checkpoint:
+            self.ep_rewards.copy_(checkpoint["ep_rewards"])
 
-        # Load replay Buffer State Dict
-        if self.config.load_replay_buffer_state_dict:
-            self.replay_buffer.load_state_dict(checkpoint["replay_buffer_state_dict"])
-        elif verbose:
-            print("load_replay_buffer_state_dict set to False: replay buffer state dict not loaded")
+        # Load Replay Buffer
+        if "replay_buffer" in checkpoint:
+            self.replay_buffer = checkpoint["replay_buffer"]
 
-        # Load Grad Scaler
-        if "grad_scaler_state_dict" in checkpoint:
-            self.grad_scaler_state_dict = checkpoint["grad_scaler_state_dict"]
+        # Model Step, already loaded from optm
+        self.model_step.fill_(checkpoint["model_step"])
 
         # Print Model state
         if verbose:
@@ -727,7 +734,7 @@ class TWISTER(models.Model):
             if self.model_step % self.config.critic_ema_decay == 0:
                 self.v_target.load_state_dict(self.value_network.state_dict())
 
-    def train_step(self, inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training):
+    def train_step(self, inputs, targets, accumulated_steps, acc_step, eval_training):
 
         # Init Dict
         batch_losses = {}
@@ -743,7 +750,7 @@ class TWISTER(models.Model):
         # World Model Step
         self.set_require_grad([self.policy_network, self.value_network], False)
         self.set_require_grad([self.encoder_network, self.decoder_network, self.rssm, self.reward_network, self.continue_network], True)
-        world_model_batch_losses, world_model_batch_metrics, _ = self.world_model.train_step(inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training)
+        world_model_batch_losses, world_model_batch_metrics, _ = self.world_model.train_step(inputs, targets, accumulated_steps, acc_step, eval_training)
         batch_losses.update({"world_model_" + key: value for key, value in world_model_batch_losses.items()})
         batch_metrics.update({"world_model_" + key: value for key, value in world_model_batch_metrics.items()})
         self.infos.update({"world_model_" + key: value for key, value in self.world_model.infos.items()})
@@ -757,7 +764,7 @@ class TWISTER(models.Model):
 
         self.set_require_grad(self.policy_network, True)
         self.set_require_grad([self.value_network, self.encoder_network, self.decoder_network, self.rssm, self.reward_network, self.continue_network], False)
-        actor_model_batch_losses, actor_model_batch_metrics, _ = self.actor_model.train_step(inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training)
+        actor_model_batch_losses, actor_model_batch_metrics, _ = self.actor_model.train_step(inputs, targets, accumulated_steps, acc_step, eval_training)
         batch_losses.update({"actor_model_" + key: value for key, value in actor_model_batch_losses.items()})
         batch_metrics.update({"actor_model_" + key: value for key, value in actor_model_batch_metrics.items()})
         self.infos.update({"actor_model_" + key: value for key, value in self.actor_model.infos.items()})
@@ -768,7 +775,7 @@ class TWISTER(models.Model):
 
         self.set_require_grad(self.value_network, True)
         self.set_require_grad([self.policy_network, self.encoder_network, self.decoder_network, self.rssm, self.reward_network, self.continue_network], False)
-        critic_model_batch_losses, critic_model_batch_metrics, _ = self.critic_model.train_step(inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training)
+        critic_model_batch_losses, critic_model_batch_metrics, _ = self.critic_model.train_step(inputs, targets, accumulated_steps, acc_step, eval_training)
         batch_losses.update({"critic_model_" + key: value for key, value in critic_model_batch_losses.items()})
         batch_metrics.update({"critic_model_" + key: value for key, value in critic_model_batch_metrics.items()})
         self.infos.update({"critic_model_" + key: value for key, value in self.critic_model.infos.items()})
@@ -794,14 +801,12 @@ class TWISTER(models.Model):
         if 0 < num_env_steps < 1:
             model_step_period = 1 / num_env_steps
             if self.model_step % model_step_period == 0:
-                with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
-                    self.env_step()
+                self.env_step()
             
         # n env steps per model step
         else:
-            with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
-                for i in range(int(num_env_steps)):
-                    self.env_step()
+            for i in range(int(num_env_steps)):
+                self.env_step()
 
         # Update Infos
         self.infos["episodes"] = self.episodes.item()
@@ -831,7 +836,7 @@ class TWISTER(models.Model):
         def __getattr__(self, name):
             return getattr(self.outer, name)
 
-        def train_step(self, inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training):
+        def train_step(self, inputs, targets, accumulated_steps, acc_step, eval_training):
             """Custom train_step for world model that handles SAM optimizer"""
             
             # Check if using SAM optimizer
@@ -844,43 +849,30 @@ class TWISTER(models.Model):
                 
                 # SAM requires a closure function for the second forward-backward pass
                 def closure():
-                    self.optimizer.zero_grad()
-                    if "cuda" in str(self.device):
-                        with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
-                            batch_losses_closure, _, _, _ = self.forward_model(inputs, targets, compute_metrics=eval_training)
-                    else:
-                        batch_losses_closure, _, _, _ = self.forward_model(inputs, targets, compute_metrics=eval_training)
-                    
+                    batch_losses_closure, _, _, _ = self.forward_model(inputs, targets, compute_metrics=eval_training)
                     loss_closure = batch_losses_closure["loss"] / accumulated_steps
-                    grad_scaler.scale(loss_closure).backward()
+                    loss_closure.backward()
                     return loss_closure
                 
                 # First forward-backward pass (for gradient calculation)
-                if "cuda" in str(self.device):
-                    with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
-                        batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
-                else:
-                    batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+                batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
                 
                 loss = batch_losses["loss"] / accumulated_steps
-                grad_scaler.scale(loss).backward()
+                loss.backward()
                 
                 # Continue accumulating
                 if acc_step < accumulated_steps:
                     return batch_losses, batch_metrics, acc_step
                 
-                # Unscale gradients before SAM step
-                grad_scaler.unscale_(self.optimizer)
-                
                 # SAM step with closure for second forward-backward pass
-                grad_scaler.step(self.optimizer, closure)
-                grad_scaler.update()
+                self.optimizer.step(closure)
+                self.optimizer.zero_grad()
                 
                 acc_step = 0
                 
             else:
                 # Use default train_step for non-SAM optimizers
-                return super().train_step(inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training)
+                return super().train_step(inputs, targets, accumulated_steps, acc_step, eval_training)
             
             # Update Model Infos (similar to base implementation)
             if len(self.optimizer.param_groups) > 1:
@@ -967,9 +959,8 @@ class TWISTER(models.Model):
                     
                 # Compute contrastive loss
                 if features_feats.dtype != torch.float32:
-                    with torch.cuda.amp.autocast(enabled=False):
-                        info_nce_loss, acc_con = self.compute_contrastive_loss(features_feats.type(torch.float32), features_embed.type(torch.float32))
-                        info_nce_loss = info_nce_loss.type(features_feats.dtype)
+                    info_nce_loss, acc_con = self.compute_contrastive_loss(features_feats.type(torch.float32), features_embed.type(torch.float32))
+                    info_nce_loss = info_nce_loss.type(features_feats.dtype)
                 else:
                     info_nce_loss, acc_con = self.compute_contrastive_loss(features_feats, features_embed)
 
@@ -1454,8 +1445,7 @@ class TWISTER(models.Model):
                     return sorted_indices
                     
                 if features_feats.dtype != torch.float32:
-                    with torch.cuda.amp.autocast(enabled=False):
-                        contrastive_sorted_indices.append(get_sorted_indices(features_feats.type(torch.float32), features_embed.type(torch.float32)))
+                    contrastive_sorted_indices.append(get_sorted_indices(features_feats.type(torch.float32), features_embed.type(torch.float32)))
                 else:
                     contrastive_sorted_indices.append(get_sorted_indices(features_feats, features_embed))
 

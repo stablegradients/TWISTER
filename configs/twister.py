@@ -59,8 +59,6 @@ model = nnet.models.TWISTER(env_name=env_name, override_config=override_config)
 model.compile()
 
 # Training
-precision = model.config.precision
-grad_init_scale = model.config.grad_init_scale
 epochs = model.config.epochs
 epoch_length = model.config.epoch_length
 

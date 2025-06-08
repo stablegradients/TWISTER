@@ -32,13 +32,12 @@ from nnet.optimizers import optim_dict
 class Model(modules.Module):
 
     def __init__(self, name="model"):
-        super(Model, self).__init__()
+        super().__init__()
 
         # Model Attributes
         self.compiled = False
         self.built = False
         self.name = name
-        self.grad_scaler_state_dict = None
 
     def compile(self, losses, loss_weights=None, optimizer="Adam", metrics=None, decoders=None):
 
@@ -295,7 +294,7 @@ class Model(modules.Module):
 
         return batch_losses, batch_metrics, batch_truths, batch_preds
 
-    def train_step(self, inputs, targets, precision, grad_scaler, accumulated_steps, acc_step, eval_training):
+    def train_step(self, inputs, targets, accumulated_steps, acc_step, eval_training):
 
         """ train_step method
 
@@ -304,34 +303,22 @@ class Model(modules.Module):
         
         """
 
-        # Automatic Mixed Precision Casting (model forward + loss computing)
-        if "cuda" in str(self.device):
-            with torch.cuda.amp.autocast(enabled=precision!=torch.float32, dtype=precision):
-                batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
-        else:
-            batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
+        # Model forward + loss computing
+        batch_losses, batch_metrics, batch_truths, batch_preds = self.forward_model(inputs, targets, compute_metrics=eval_training)
 
         # Accumulated Steps
         loss = batch_losses["loss"] / accumulated_steps
         acc_step += 1
 
         # Backward: Accumulate gradients
-        grad_scaler.scale(loss).backward()
+        loss.backward()
 
         # Continue Accumulating
         if acc_step < accumulated_steps:
             return batch_losses, batch_metrics, acc_step
 
-        # Grad Scaler Info
-        if grad_scaler.is_enabled():
-            self.add_info("grad_scale", grad_scaler.get_scale())
-
-        # Unscale Gradients
-        grad_scaler.unscale_(self.optimizer)
-
-        # Optimizer Step and Update Scale
-        grad_scaler.step(self.optimizer)
-        grad_scaler.update()
+        # Optimizer Step
+        self.optimizer.step()
 
         # Zero Gradients
         self.optimizer.zero_grad()
@@ -379,7 +366,7 @@ class Model(modules.Module):
         # Add Info Model Step
         self.add_info("step", self.model_step.item())
 
-        return batch_losses, batch_metrics, acc_step  
+        return batch_losses, batch_metrics, acc_step
 
     def eval_step(self, inputs, targets, verbose=0):
 
@@ -465,8 +452,7 @@ class Model(modules.Module):
         torch.save({
             "model_state_dict": self.state_dict(),
             "optimizer_state_dict": None if not save_optimizer else {key: value.state_dict() for key, value in self.optimizer.items()} if isinstance(self.optimizer, dict) else self.optimizer.state_dict(),
-            "model_step": self.model_step,
-            "grad_scaler_state_dict": self.grad_scaler.state_dict() if hasattr(self, "grad_scaler") else None
+            "model_step": self.model_step
             }, path)
 
         # Print Model state
@@ -516,9 +502,7 @@ class Model(modules.Module):
             # Model Step, already loaded from optm
             self.model_step.fill_(checkpoint["model_step"])
 
-        # Load Grad Scaler
-        if "grad_scaler_state_dict" in checkpoint:
-            self.grad_scaler_state_dict = checkpoint["grad_scaler_state_dict"]
+
 
         # Print Model state
         if verbose:
@@ -621,7 +605,6 @@ class Model(modules.Module):
         initial_epoch=0, 
         callback_path=None, 
         steps_per_epoch=None, 
-        precision=torch.float32, 
         accumulated_steps=1, 
         eval_period_step=None, 
         eval_period_epoch=1,
@@ -630,7 +613,6 @@ class Model(modules.Module):
         log_figure_period_epoch=1, 
         step_log_period=10, 
         eval_training=True,
-        grad_init_scale=65536.0, 
         detect_anomaly=False, 
         recompute_metrics=False,
         wandb_logging=False,
@@ -678,13 +660,6 @@ class Model(modules.Module):
         # Is Compiled
         if not self.compiled:
             raise Exception("You must compile your model before training/testing.")
-
-        # Mixed Precision Gradient Scaler
-        self.grad_scaler = torch.cuda.amp.GradScaler(init_scale=grad_init_scale, enabled=(grad_init_scale != None) and (precision==torch.float16))# and ("cuda" in str(self.device)))
-        if self.grad_scaler_state_dict is not None:
-            self.grad_scaler.load_state_dict(self.grad_scaler_state_dict)
-            self.grad_scaler_state_dict = None
-        assert not (precision==torch.float16 and not self.grad_scaler.is_enabled()), "gradient scaling not enabled for float16 precision training!"
 
         # Anomaly Enabled
         torch.set_anomaly_enabled(detect_anomaly)
@@ -750,7 +725,7 @@ class Model(modules.Module):
                     targets = self.transfer_to_device(targets)
 
                     # Train Step
-                    batch_losses, batch_metrics, acc_step = self.train_step(inputs=inputs, targets=targets, precision=precision, grad_scaler=self.grad_scaler, accumulated_steps=accumulated_steps, acc_step=acc_step, eval_training=eval_training)
+                    batch_losses, batch_metrics, acc_step = self.train_step(inputs=inputs, targets=targets, accumulated_steps=accumulated_steps, acc_step=acc_step, eval_training=eval_training)
 
                     # Update Epoch Loss and Metric
                     for key, value in batch_losses.items():
